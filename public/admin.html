@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Responses Chat Studio Admin</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="scene-glow scene-glow--left"></div>
+    <div class="scene-glow scene-glow--right"></div>
+
+    <div class="admin-shell">
+      <section class="panel-card admin-hero">
+        <p class="eyebrow">Gateway Admin</p>
+        <h1>网关级人格和默认值管理</h1>
+        <p class="intro">
+          这里改的是服务端实际转发给 `/responses` 的默认配置。你可以在这里统一覆盖 `instructions`，让最终对话表现成你自己的产品。
+        </p>
+        <div class="admin-hero__actions">
+          <a class="button button--ghost button--inline" href="/">返回聊天页</a>
+          <button id="reloadButton" class="button button--ghost" type="button">重新读取</button>
+        </div>
+      </section>
+
+      <section class="panel-card admin-panel">
+        <div class="panel-head">
+          <h2>运行状态</h2>
+          <span id="adminStatusBadge" class="status-badge">读取中</span>
+        </div>
+        <p class="meta-line">上游地址</p>
+        <div id="adminEndpointValue" class="endpoint-chip">读取中...</div>
+        <p id="adminApiKeyInfo" class="meta-note">密钥状态：读取中</p>
+      </section>
+
+      <section class="panel-card admin-panel">
+        <form id="adminForm" class="admin-form">
+          <div class="field">
+            <label for="gatewayPromptMode">网关提示词模式</label>
+            <select id="gatewayPromptMode">
+              <option value="prepend">prepend</option>
+              <option value="append">append</option>
+              <option value="replace">replace</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label for="gatewaySystemPrompt">网关系统提示词</label>
+            <textarea
+              id="gatewaySystemPrompt"
+              rows="10"
+              spellcheck="false"
+              placeholder="这里是服务端统一注入的 instructions"
+            ></textarea>
+          </div>
+
+          <div class="field">
+            <label for="defaultModel">默认模型</label>
+            <input id="defaultModel" type="text" spellcheck="false" />
+          </div>
+
+          <div class="field">
+            <label for="defaultInstructions">页面默认系统提示词</label>
+            <textarea
+              id="defaultInstructions"
+              rows="8"
+              spellcheck="false"
+              placeholder="当页面首次打开时会读到这个默认值"
+            ></textarea>
+          </div>
+
+          <div class="field">
+            <label for="defaultExtraBody">默认额外请求 JSON</label>
+            <textarea
+              id="defaultExtraBody"
+              rows="8"
+              spellcheck="false"
+              placeholder='例如 { "text": { "verbosity": "low" } }'
+            ></textarea>
+          </div>
+
+          <div class="admin-actions">
+            <p id="adminErrorText" class="error-text" hidden></p>
+            <button class="button button--primary" type="submit">保存到运行时配置</button>
+            <button id="resetButton" class="button button--ghost" type="button">重置为 .env 默认值</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel-card admin-panel">
+        <div class="panel-head">
+          <h2>说明</h2>
+        </div>
+        <div class="admin-notes">
+          <p><strong>`replace`</strong>：最适合你要“统一回答成我的产品”的场景。</p>
+          <p><strong>`prepend`</strong>：保留页面原始 `instructions`，但把你的产品人格放到更高优先级位置。</p>
+          <p><strong>`append`</strong>：一般只适合补充规则，不适合强覆盖人格。</p>
+          <p>配置会保存到项目目录下的 `data/runtime-config.json`，重启服务后仍会生效。</p>
+        </div>
+      </section>
+    </div>
+
+    <script type="module" src="/admin.js"></script>
+  </body>
+</html>

@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Responses Chat Studio</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="scene-glow scene-glow--left"></div>
+    <div class="scene-glow scene-glow--right"></div>
+
+    <div class="app-shell app-shell--chat">
+      <aside class="history-sidebar panel-card">
+        <div class="history-sidebar__header">
+          <div>
+            <p class="eyebrow">History</p>
+            <h2>聊天记录</h2>
+          </div>
+          <button id="historyNewButton" class="button button--ghost" type="button">新对话</button>
+        </div>
+
+        <div id="historyList" class="history-list"></div>
+        <div id="historyEmpty" class="empty-state empty-state--compact" hidden>
+          <p>还没有聊天记录。</p>
+        </div>
+
+        <div class="history-sidebar__footer">
+          <a id="adminLink" class="button button--ghost button--inline" href="/admin">管理</a>
+          <span id="gatewayPromptInfo" class="meta-note">网关系统提示词：未启用</span>
+        </div>
+      </aside>
+
+      <main class="chat-panel">
+        <section class="panel-card panel-card--chat panel-card--wide">
+          <div class="chat-topbar">
+            <div class="chat-topbar__copy">
+              <p class="eyebrow">Responses Relay Studio</p>
+              <h1 id="conversationTitle" class="chat-title">新对话</h1>
+              <p id="sessionSummary" class="chat-meta">准备开始聊天</p>
+            </div>
+
+            <div class="chat-actions">
+              <span id="statusBadge" class="status-badge">空闲</span>
+              <button id="newChatButton" class="button button--ghost" type="button">新对话</button>
+              <button id="stopButton" class="button button--ghost" type="button" disabled>停止</button>
+            </div>
+          </div>
+
+          <div class="chat-subbar">
+            <span id="endpointValue" class="meta-note">中转：读取中...</span>
+          </div>
+
+          <div id="messages" class="messages" aria-live="polite">
+            <div class="empty-state">
+              <p>从下面开始发第一条文本或图片消息。</p>
+            </div>
+          </div>
+
+          <form id="composerForm" class="composer">
+            <label class="composer__label" for="messageInput">消息</label>
+            <textarea
+              id="messageInput"
+              rows="4"
+              spellcheck="true"
+              placeholder="输入文字，可与图片一起发送；按 Cmd/Ctrl + Enter 发送"
+            ></textarea>
+
+            <div class="upload-row">
+              <label class="button button--ghost button--inline upload-trigger" for="imageInput">
+                选择图片
+              </label>
+              <input id="imageInput" class="sr-only" type="file" accept="image/*" multiple />
+              <span class="upload-hint">支持多图，也支持直接复制图片后在输入框里粘贴</span>
+            </div>
+
+            <div id="attachments" class="attachments" hidden></div>
+
+            <div class="composer__actions">
+              <p id="errorText" class="error-text" hidden></p>
+              <button id="sendButton" class="button button--primary" type="submit">发送</button>
+            </div>
+          </form>
+        </section>
+      </main>
+    </div>
+
+    <script src="/vendor/markdown-it.min.js"></script>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

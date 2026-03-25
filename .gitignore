@@ -1,0 +1,5 @@
+.DS_Store
+.env
+npm-debug.log*
+data/runtime-config.json
+node_modules/
