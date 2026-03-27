@@ -222,7 +222,7 @@ function renderRelayApiKeySettings(infoText = '') {
   elements.relayAccessModePublic.checked = state.accessMode === 'public';
   elements.relayAccessModePublic.disabled = !state.hasPublicRelayKey;
   elements.publicRelayHint.textContent = state.hasPublicRelayKey
-    ? '公益 key 已启用，切换后前端不会拿到真实 key。'
+    ? ''
     : '当前服务端没有可用的默认 key，所以只能使用自己的 key。';
   elements.relayApiKeyField.hidden = state.accessMode === 'public';
   elements.relayApiKeyInput.value = state.relayApiKey;
