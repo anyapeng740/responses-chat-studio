@@ -29,7 +29,6 @@
         </div>
 
         <div class="history-sidebar__footer">
-          <a id="adminLink" class="button button--ghost button--inline" href="/admin">管理</a>
           <span id="gatewayPromptInfo" class="meta-note">网关系统提示词：未启用</span>
         </div>
       </aside>
@@ -37,21 +36,42 @@
       <main class="chat-panel">
         <section class="panel-card panel-card--chat panel-card--wide">
           <div class="chat-topbar">
-            <div class="chat-topbar__copy">
-              <p class="eyebrow">Responses Relay Studio</p>
-              <h1 id="conversationTitle" class="chat-title">新对话</h1>
-              <p id="sessionSummary" class="chat-meta">准备开始聊天</p>
+            <div class="chat-topbar__left">
+              <h1 class="chat-title" id="conversationTitle">新对话</h1>
+              <p class="chat-meta" id="sessionSummary">准备开始聊天</p>
             </div>
 
-            <div class="chat-actions">
+            <div class="chat-topbar__center">
+              <div id="modeTabs" class="mode-tabs" role="tablist" aria-label="对话模式">
+                <button
+                  class="mode-tab mode-tab--active"
+                  type="button"
+                  schema="chat"
+                  role="tab"
+                  aria-selected="true"
+                  data-mode="chat"
+                >
+                  聊天
+                </button>
+                <button
+                  class="mode-tab"
+                  type="button"
+                  schema="prompt_optimizer"
+                  role="tab"
+                  aria-selected="false"
+                  data-mode="prompt_optimizer"
+                >
+                  Prompt 优化
+                </button>
+              </div>
+            </div>
+
+            <div class="chat-topbar__right chat-actions">
               <span id="statusBadge" class="status-badge">空闲</span>
-              <button id="newChatButton" class="button button--ghost" type="button">新对话</button>
-              <button id="stopButton" class="button button--ghost" type="button" disabled>停止</button>
+              <button id="globalSettingsButton" class="button button--ghost button--inline" type="button">设置</button>
+              <button id="newChatButton" class="button button--ghost button--inline" type="button">新对话</button>
+              <button id="stopButton" class="button button--ghost button--inline" type="button" disabled>停止</button>
             </div>
-          </div>
-
-          <div class="chat-subbar">
-            <span id="endpointValue" class="meta-note">中转：读取中...</span>
           </div>
 
           <div id="messages" class="messages" aria-live="polite">
@@ -64,7 +84,7 @@
             <label class="composer__label" for="messageInput">消息</label>
             <textarea
               id="messageInput"
-              rows="4"
+              rows="1"
               spellcheck="true"
               placeholder="输入文字，可与图片一起发送；按 Cmd/Ctrl + Enter 发送"
             ></textarea>
@@ -86,6 +106,64 @@
           </form>
         </section>
       </main>
+    </div>
+
+    <div id="settingsDrawer" class="settings-drawer" hidden>
+      <button
+        id="settingsDrawerBackdrop"
+        class="settings-drawer__backdrop"
+        type="button"
+        aria-label="关闭全局设置"
+      ></button>
+
+      <section class="settings-drawer__panel" role="dialog" aria-modal="true" aria-labelledby="settingsDrawerTitle">
+        <div class="settings-drawer__header">
+          <div>
+            <p class="eyebrow">Global Settings</p>
+            <h2 id="settingsDrawerTitle" class="settings-drawer__title">全局设置</h2>
+            <p class="settings-drawer__intro">这里的接入配置全局生效，不再占用聊天主区域。</p>
+          </div>
+
+          <button
+            id="settingsDrawerCloseButton"
+            class="button button--ghost button--inline settings-drawer__close"
+            type="button"
+          >
+            关闭
+          </button>
+        </div>
+
+        <section class="relay-settings" aria-labelledby="relaySettingsTitle">
+          <div class="relay-settings__header">
+            <div>
+              <h3 id="relaySettingsTitle" class="relay-settings__title">接入设置</h3>
+              <p class="meta-note">客户在这里输入自己的 `RELAY_API_KEY` 才能开始使用，后续也可以直接改。</p>
+            </div>
+            <span id="relayApiKeyState" class="mini-badge mini-badge--warn">未配置</span>
+          </div>
+
+          <form id="relayApiKeyForm" class="relay-settings__form">
+            <label class="field field--compact" for="relayApiKeyInput">
+              <span>RELAY_API_KEY</span>
+              <input
+                id="relayApiKeyInput"
+                type="text"
+                spellcheck="false"
+                autocomplete="off"
+                placeholder="请输入客户自己的 RELAY_API_KEY"
+              />
+            </label>
+
+            <div class="relay-settings__actions">
+              <p id="relayApiKeyInfo" class="meta-note">保存后才可以开始使用。</p>
+              <p id="relayApiKeyErrorText" class="error-text" hidden></p>
+              <button id="relayApiKeySaveButton" class="button button--primary" type="submit">
+                保存 Key
+              </button>
+            </div>
+          </form>
+        </section>
+      </section>
     </div>
 
     <script src="/vendor/markdown-it.min.js"></script>

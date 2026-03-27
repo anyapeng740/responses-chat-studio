@@ -1,10 +1,27 @@
 const sessionKey = 'responses-chat-studio.session-id';
 const currentConversationKey = 'responses-chat-studio.current-conversation-id';
+const currentModeKey = 'responses-chat-studio.current-mode';
 const maxImageCount = 4;
 const maxFileBytes = 4 * 1024 * 1024;
 const historyDbName = 'responses-chat-studio-db';
 const historyStoreName = 'conversations';
 const maxHistoryItems = 50;
+const conversationModes = Object.freeze({
+  chat: {
+    label: '聊天',
+    description: '像平时一样直接聊，回答会更像自然对话。',
+    emptyState: '从下面开始发第一条消息，随便聊就行。',
+    emptyTitle: '新对话',
+    inputPlaceholder: '输入消息，可与图片一起发送；按 Cmd/Ctrl + Enter 发送',
+  },
+  prompt_optimizer: {
+    label: 'Prompt 优化',
+    description: '把编程需求整理成更适合 AI Coding Assistant 执行的 prompt。',
+    emptyState: '描述你的编程目标、当前问题、相关代码范围和预期结果。',
+    emptyTitle: 'Prompt 优化',
+    inputPlaceholder: '描述你的编程需求、上下文、现状和预期结果，我来帮你整理 prompt',
+  },
+});
 const markdownRenderer =
   typeof window !== 'undefined' && typeof window.markdownit === 'function'
     ? window.markdownit({
@@ -19,7 +36,8 @@ let persistTimer = null;
 
 const state = {
   endpoint: '',
-  adminPath: '/admin',
+  currentMode: 'chat',
+  relayApiKey: '',
   hasApiKey: false,
   isStreaming: false,
   abortController: null,
@@ -29,7 +47,10 @@ const state = {
   hasGatewaySystemPrompt: false,
   gatewayPromptMode: 'prepend',
   defaultModel: 'gpt-5.4',
-  defaultInstructions: '',
+  defaultInstructionsByMode: {
+    chat: '',
+    prompt_optimizer: '',
+  },
   defaultExtraBody: {},
   attachments: [],
   messages: [],
@@ -37,12 +58,11 @@ const state = {
 };
 
 const elements = {
-  adminLink: document.querySelector('#adminLink'),
   attachments: document.querySelector('#attachments'),
   composerForm: document.querySelector('#composerForm'),
   conversationTitle: document.querySelector('#conversationTitle'),
-  endpointValue: document.querySelector('#endpointValue'),
   errorText: document.querySelector('#errorText'),
+  globalSettingsButton: document.querySelector('#globalSettingsButton'),
   gatewayPromptInfo: document.querySelector('#gatewayPromptInfo'),
   historyEmpty: document.querySelector('#historyEmpty'),
   historyList: document.querySelector('#historyList'),
@@ -50,9 +70,20 @@ const elements = {
   imageInput: document.querySelector('#imageInput'),
   messageInput: document.querySelector('#messageInput'),
   messages: document.querySelector('#messages'),
+  modeDescription: document.querySelector('#modeDescription'),
+  modeTabs: document.querySelector('#modeTabs'),
   newChatButton: document.querySelector('#newChatButton'),
+  relayApiKeyErrorText: document.querySelector('#relayApiKeyErrorText'),
+  relayApiKeyForm: document.querySelector('#relayApiKeyForm'),
+  relayApiKeyInfo: document.querySelector('#relayApiKeyInfo'),
+  relayApiKeyInput: document.querySelector('#relayApiKeyInput'),
+  relayApiKeySaveButton: document.querySelector('#relayApiKeySaveButton'),
+  relayApiKeyState: document.querySelector('#relayApiKeyState'),
   sendButton: document.querySelector('#sendButton'),
   sessionSummary: document.querySelector('#sessionSummary'),
+  settingsDrawer: document.querySelector('#settingsDrawer'),
+  settingsDrawerBackdrop: document.querySelector('#settingsDrawerBackdrop'),
+  settingsDrawerCloseButton: document.querySelector('#settingsDrawerCloseButton'),
   statusBadge: document.querySelector('#statusBadge'),
   stopButton: document.querySelector('#stopButton'),
 };
@@ -67,6 +98,7 @@ async function boot() {
   try {
     const config = await fetchConfig();
     hydrateConfig(config);
+    renderRelayApiKeySettings();
     state.history = await loadConversations();
     restoreCurrentConversation();
     renderApp();
@@ -74,6 +106,7 @@ async function boot() {
   } catch (error) {
     showError(`加载失败: ${error.message}`);
     createBlankConversation();
+    renderRelayApiKeySettings('读取配置失败，暂时无法保存 key。');
     renderApp();
     setStatus('配置错误');
   }
@@ -81,6 +114,7 @@ async function boot() {
 
 function bindEvents() {
   elements.composerForm.addEventListener('submit', onSubmit);
+  elements.globalSettingsButton.addEventListener('click', openSettingsDrawer);
   elements.messageInput.addEventListener('keydown', onComposerKeydown);
   elements.messageInput.addEventListener('paste', onComposerPaste);
   elements.imageInput.addEventListener('change', onImageChange);
@@ -89,6 +123,11 @@ function bindEvents() {
   elements.newChatButton.addEventListener('click', () => startNewConversation(true));
   elements.historyNewButton.addEventListener('click', () => startNewConversation(true));
   elements.historyList.addEventListener('click', onHistoryListClick);
+  elements.modeTabs.addEventListener('click', onModeTabsClick);
+  elements.relayApiKeyForm.addEventListener('submit', onRelayApiKeySubmit);
+  elements.settingsDrawerBackdrop.addEventListener('click', closeSettingsDrawer);
+  elements.settingsDrawerCloseButton.addEventListener('click', closeSettingsDrawer);
+  document.addEventListener('keydown', onDocumentKeydown);
 }
 
 async function fetchConfig() {
@@ -101,16 +140,17 @@ async function fetchConfig() {
 
 function hydrateRuntime() {
   state.sessionId = getOrCreateLocalValue(sessionKey);
+  state.currentMode = normalizeMode(localStorage.getItem(currentModeKey));
 }
 
 function hydrateConfig(config) {
   state.endpoint = config.endpoint;
-  state.adminPath = config.adminPath || '/admin';
+  state.relayApiKey = config.relayApiKey || '';
   state.hasApiKey = Boolean(config.hasApiKey);
   state.hasGatewaySystemPrompt = Boolean(config.hasGatewaySystemPrompt);
   state.gatewayPromptMode = config.gatewayPromptMode || 'prepend';
   state.defaultModel = config.defaultModel || 'gpt-5.4';
-  state.defaultInstructions = config.defaultInstructions || '';
+  state.defaultInstructionsByMode = normalizeInstructionsByMode(config);
   state.defaultExtraBody =
     config.defaultExtraBody && typeof config.defaultExtraBody === 'object' ? config.defaultExtraBody : {};
 }
@@ -135,13 +175,36 @@ function renderApp() {
 }
 
 function renderHeader() {
-  elements.adminLink.href = state.adminPath;
+  renderModeControls();
   elements.gatewayPromptInfo.textContent = state.hasGatewaySystemPrompt
     ? `网关系统提示词：已启用（${state.gatewayPromptMode}）`
     : '网关系统提示词：未启用';
-  elements.endpointValue.textContent = `中转：${state.endpoint || '未配置'}`;
-  elements.conversationTitle.textContent = deriveConversationTitle(state.messages);
+  elements.conversationTitle.textContent = deriveConversationTitle(state.messages, state.currentMode);
   elements.sessionSummary.textContent = buildSessionSummary();
+}
+
+function renderModeControls() {
+  const modeMeta = getModeMeta();
+  const tabButtons = elements.modeTabs ? elements.modeTabs.querySelectorAll('[data-mode]') : [];
+
+  for (const button of tabButtons) {
+    const isActive = normalizeMode(button.dataset.mode) === state.currentMode;
+    button.classList.toggle('mode-tab--active', isActive);
+    button.setAttribute('aria-selected', String(isActive));
+  }
+
+  if (elements.modeDescription) {
+    elements.modeDescription.textContent = modeMeta.description;
+  }
+  elements.messageInput.placeholder = modeMeta.inputPlaceholder;
+}
+
+function renderRelayApiKeySettings(infoText = '') {
+  elements.relayApiKeyInput.value = state.relayApiKey;
+  elements.relayApiKeyState.textContent = state.hasApiKey ? '已配置' : '未配置';
+  elements.relayApiKeyState.className = `mini-badge ${state.hasApiKey ? 'mini-badge--ok' : 'mini-badge--warn'}`;
+  elements.relayApiKeyInfo.textContent =
+    infoText || (state.hasApiKey ? '已保存，可直接开始使用，也可以随时修改。' : '先保存 RELAY_API_KEY，保存后才可以使用。');
 }
 
 function renderAttachments() {
@@ -181,9 +244,10 @@ function renderMessages() {
   elements.messages.innerHTML = '';
 
   if (!state.messages.length) {
+    const modeMeta = getModeMeta();
     const empty = document.createElement('div');
     empty.className = 'empty-state';
-    empty.innerHTML = '<p>从下面开始发第一条文本或图片消息。</p>';
+    empty.innerHTML = `<p>${escapeHtml(modeMeta.emptyState)}</p>`;
     elements.messages.append(empty);
     return;
   }
@@ -256,8 +320,12 @@ function renderHistoryList() {
     title.className = 'history-item__main';
     title.dataset.action = 'load-conversation';
     title.dataset.conversationId = conversation.id;
+    const modeMeta = getModeMeta(conversation.mode);
     title.innerHTML = `
-      <strong>${escapeHtml(conversation.title || '未命名对话')}</strong>
+      <div class="history-item__topline">
+        <strong>${escapeHtml(conversation.title || '未命名对话')}</strong>
+        <span class="mini-badge mode-badge">${escapeHtml(modeMeta.label)}</span>
+      </div>
       <span>${escapeHtml(conversation.preview || '空白对话')}</span>
       <time>${formatDateTime(conversation.updatedAt)}</time>
     `;
@@ -375,7 +443,8 @@ async function onSubmit(event) {
   }
 
   if (!state.hasApiKey) {
-    showError('服务端还没有配置 RELAY_API_KEY。');
+    showError('请先在全局设置里保存 RELAY_API_KEY。');
+    openSettingsDrawer();
     return;
   }
 
@@ -436,7 +505,8 @@ async function streamResponse(assistantMessageId) {
 
   const payload = {
     model: state.defaultModel,
-    instructions: state.defaultInstructions,
+    mode: state.currentMode,
+    instructions: getActiveInstructions(),
     extraBody: state.defaultExtraBody,
     sessionId: state.sessionId,
     clientRequestId: state.sessionId,
@@ -646,22 +716,26 @@ function ensureCurrentConversation() {
 }
 
 function createBlankConversation() {
+  state.currentMode = normalizeMode(state.currentMode);
   state.currentConversationId = crypto.randomUUID();
   state.currentConversationCreatedAt = Date.now();
   state.messages = [];
   state.attachments = [];
   state.abortController = null;
   localStorage.setItem(currentConversationKey, state.currentConversationId);
+  localStorage.setItem(currentModeKey, state.currentMode);
 }
 
-function startNewConversation(focusInput) {
+function startNewConversation(focusInput, mode = state.currentMode) {
   if (state.isStreaming) {
     showError('正在生成回复时不能切换到新对话。');
     return;
   }
 
   hideError();
+  state.currentMode = normalizeMode(mode);
   createBlankConversation();
+  elements.messageInput.value = '';
   renderApp();
   setStatus('空闲');
   if (focusInput) {
@@ -690,6 +764,113 @@ async function onHistoryListClick(event) {
   }
 }
 
+function onModeTabsClick(event) {
+  const button = event.target.closest('[data-mode]');
+  if (!button) {
+    return;
+  }
+
+  switchMode(button.dataset.mode);
+}
+
+function switchMode(nextMode) {
+  const normalizedMode = normalizeMode(nextMode);
+  if (normalizedMode === state.currentMode) {
+    return;
+  }
+
+  if (state.isStreaming) {
+    showError('正在生成回复时不能切换模式。');
+    return;
+  }
+
+  hideError();
+
+  if (state.messages.length > 0) {
+    startNewConversation(true, normalizedMode);
+    return;
+  }
+
+  state.currentMode = normalizedMode;
+  localStorage.setItem(currentModeKey, state.currentMode);
+  renderApp();
+  setStatus('空闲');
+  elements.messageInput.focus();
+}
+
+function openSettingsDrawer() {
+  hideRelayApiKeyError();
+  renderRelayApiKeySettings();
+  elements.settingsDrawer.hidden = false;
+  document.body.classList.add('body--drawer-open');
+  elements.relayApiKeyInput.focus();
+  elements.relayApiKeyInput.select();
+}
+
+function closeSettingsDrawer() {
+  elements.settingsDrawer.hidden = true;
+  document.body.classList.remove('body--drawer-open');
+  elements.globalSettingsButton.focus();
+}
+
+function onDocumentKeydown(event) {
+  if (event.key === 'Escape' && !elements.settingsDrawer.hidden) {
+    closeSettingsDrawer();
+  }
+}
+
+async function onRelayApiKeySubmit(event) {
+  event.preventDefault();
+  hideRelayApiKeyError();
+  elements.relayApiKeySaveButton.disabled = true;
+  elements.relayApiKeyInfo.textContent = '保存中...';
+
+  try {
+    const response = await fetch('/api/admin/config', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        relayApiKey: elements.relayApiKeyInput.value.trim(),
+      }),
+    });
+
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.error || `HTTP ${response.status}`);
+    }
+
+    hydrateConfig({
+      endpoint: payload.endpoint,
+      relayApiKey: payload.config?.relayApiKey || '',
+      hasApiKey: payload.hasApiKey,
+      hasGatewaySystemPrompt: Boolean(payload.config?.gatewaySystemPrompt),
+      gatewayPromptMode: payload.config?.gatewayPromptMode || 'prepend',
+      defaultModel: payload.config?.defaultModel || 'gpt-5.4',
+      defaultInstructions: payload.config?.defaultInstructions || '',
+      defaultInstructionsByMode: payload.config?.defaultInstructionsByMode || null,
+      defaultExtraBody:
+        payload.config?.defaultExtraBody && typeof payload.config.defaultExtraBody === 'object'
+          ? payload.config.defaultExtraBody
+          : {},
+    });
+    renderHeader();
+    renderRelayApiKeySettings(state.hasApiKey ? 'Key 已保存。' : 'Key 已清空，保存新 key 后才可以使用。');
+
+    if (state.hasApiKey) {
+      hideError();
+      closeSettingsDrawer();
+      elements.messageInput.focus();
+    }
+  } catch (error) {
+    showRelayApiKeyError(`保存失败: ${error.message}`);
+    elements.relayApiKeyInfo.textContent = '保存失败，请检查输入后重试。';
+  } finally {
+    elements.relayApiKeySaveButton.disabled = false;
+  }
+}
+
 function loadConversation(conversationId) {
   if (state.isStreaming) {
     showError('正在生成回复时不能切换历史记录。');
@@ -703,9 +884,11 @@ function loadConversation(conversationId) {
 
   state.currentConversationId = conversation.id;
   state.currentConversationCreatedAt = conversation.createdAt || Date.now();
+  state.currentMode = normalizeMode(conversation.mode);
   state.messages = cloneMessages(conversation.messages || []);
   state.attachments = [];
   localStorage.setItem(currentConversationKey, state.currentConversationId);
+  localStorage.setItem(currentModeKey, state.currentMode);
   hideError();
   renderApp();
   setStatus('空闲');
@@ -750,7 +933,18 @@ function hideError() {
   elements.errorText.textContent = '';
 }
 
+function showRelayApiKeyError(message) {
+  elements.relayApiKeyErrorText.hidden = false;
+  elements.relayApiKeyErrorText.textContent = message;
+}
+
+function hideRelayApiKeyError() {
+  elements.relayApiKeyErrorText.hidden = true;
+  elements.relayApiKeyErrorText.textContent = '';
+}
+
 function buildSessionSummary() {
+  const modeMeta = getModeMeta();
   const turnCount = state.messages.filter((message) => message.role === 'user').length;
   const imageCount = state.messages.reduce((total, message) => {
     if (!Array.isArray(message.parts)) {
@@ -760,13 +954,13 @@ function buildSessionSummary() {
   }, 0);
 
   if (!state.messages.length) {
-    return '准备开始聊天';
+    return modeMeta.description;
   }
 
-  return `${turnCount} 轮消息${imageCount ? ` · ${imageCount} 张图` : ''}`;
+  return `${modeMeta.label} · ${turnCount} 轮消息${imageCount ? ` · ${imageCount} 张图` : ''}`;
 }
 
-function deriveConversationTitle(messages) {
+function deriveConversationTitle(messages, mode = state.currentMode) {
   const firstUserText = messages
     .filter((message) => message.role === 'user')
     .flatMap((message) => normalizeMessagePreviewParts(message))
@@ -780,7 +974,7 @@ function deriveConversationTitle(messages) {
     normalizeMessagePreviewParts(message).some((part) => part.type === 'image'),
   );
 
-  return hasImage ? '图片对话' : '新对话';
+  return hasImage ? '图片对话' : getModeMeta(mode).emptyTitle;
 }
 
 function deriveConversationPreview(messages) {
@@ -820,7 +1014,7 @@ function truncateText(value, maxLength) {
 }
 
 function buildPromptCacheKey() {
-  const signature = simpleHash(`${state.defaultModel}\n${state.defaultInstructions}`);
+  const signature = simpleHash(`${state.currentMode}\n${state.defaultModel}\n${getActiveInstructions()}`);
   return `${state.currentConversationId}:${signature}`;
 }
 
@@ -852,7 +1046,8 @@ async function persistCurrentConversation() {
     id: state.currentConversationId,
     createdAt: state.currentConversationCreatedAt,
     updatedAt: Date.now(),
-    title: deriveConversationTitle(state.messages),
+    mode: state.currentMode,
+    title: deriveConversationTitle(state.messages, state.currentMode),
     preview: deriveConversationPreview(state.messages),
     messages: cloneMessages(state.messages),
   };
@@ -989,6 +1184,7 @@ async function loadConversations() {
       const conversations = Array.isArray(request.result) ? request.result : [];
       resolve(
         conversations
+          .map((conversation) => normalizeConversationRecord(conversation))
           .sort((left, right) => (right.updatedAt || 0) - (left.updatedAt || 0))
           .slice(0, maxHistoryItems),
       );
@@ -1010,7 +1206,8 @@ async function upsertConversation(record) {
     transaction.onerror = () => reject(transaction.error);
   });
 
-  const nextHistory = [record, ...state.history.filter((item) => item.id !== record.id)]
+  const normalizedRecord = normalizeConversationRecord(record);
+  const nextHistory = [normalizedRecord, ...state.history.filter((item) => item.id !== record.id)]
     .sort((left, right) => (right.updatedAt || 0) - (left.updatedAt || 0))
     .slice(0, maxHistoryItems);
 
@@ -1029,4 +1226,37 @@ async function removeConversationFromDb(conversationId) {
     transaction.oncomplete = () => resolve();
     transaction.onerror = () => reject(transaction.error);
   });
+}
+
+function normalizeMode(value) {
+  return value === 'prompt_optimizer' ? 'prompt_optimizer' : 'chat';
+}
+
+function getModeMeta(mode = state.currentMode) {
+  return conversationModes[normalizeMode(mode)];
+}
+
+function getActiveInstructions() {
+  return state.defaultInstructionsByMode[normalizeMode(state.currentMode)] || '';
+}
+
+function normalizeInstructionsByMode(config) {
+  const input =
+    config && config.defaultInstructionsByMode && typeof config.defaultInstructionsByMode === 'object'
+      ? config.defaultInstructionsByMode
+      : {};
+
+  return {
+    chat: typeof input.chat === 'string' ? input.chat : config?.defaultInstructions || '',
+    prompt_optimizer:
+      typeof input.prompt_optimizer === 'string' ? input.prompt_optimizer : '',
+  };
+}
+
+function normalizeConversationRecord(record) {
+  return {
+    ...record,
+    mode: normalizeMode(record?.mode),
+    messages: Array.isArray(record?.messages) ? record.messages : [],
+  };
 }

@@ -14,14 +14,96 @@ loadEnv(path.join(__dirname, '.env'));
 
 const PORT = toPositiveInt(process.env.PORT, 3000);
 const RESPONSES_URL = process.env.RESPONSES_URL || 'https://example.com/responses';
-const RELAY_API_KEY = process.env.RELAY_API_KEY || '';
 const MAX_BODY_BYTES = toPositiveInt(process.env.MAX_BODY_BYTES, 25_000_000);
 
+const CONVERSATION_MODES = Object.freeze({
+  CHAT: 'chat',
+  PROMPT_OPTIMIZER: 'prompt_optimizer',
+});
+
+const DEFAULT_INSTRUCTIONS_BY_MODE = Object.freeze({
+  [CONVERSATION_MODES.CHAT]: `You are a conversational AI that talks like a real person - relaxed, slightly sharp, and honest.
+
+Personality:
+- Calm, a bit witty, occasionally sarcastic
+- Not afraid to point out obvious mistakes
+- Feels like a smart friend, not a polite assistant
+
+Style:
+- Keep responses short (1-4 sentences)
+- No bullet points unless asked
+- No over-explaining
+
+Behavior:
+- If the user says something naive, flawed, or inefficient, you can point it out directly
+- Light teasing or mild sarcasm is allowed, but never mean-spirited
+- Prefer subtle humor over blunt insults
+- Still aim to help, just not in a "service tone"
+
+Constraints:
+- Do not sound like customer support
+- Do not be overly polite or overly agreeable
+- Avoid being harsh, aggressive, or offensive
+- Keep it natural, like a real conversation
+
+Goal:
+Feel like a sharp but likable human - someone who might call out your mistake, but still help you fix it.`,
+  [CONVERSATION_MODES.PROMPT_OPTIMIZER]: `You are a Prompt Optimization Agent specialized for programming and technical tasks.
+
+Your job is to transform vague, incomplete, or messy user requests into clear, structured, and highly effective prompts for AI coding assistants.
+
+Core Principles:
+- Clarity over verbosity
+- Explicit context over assumptions
+- Reproducibility over guesswork
+- Constraints over freedom
+
+Workflow:
+1. Identify the user's real goal (bug fixing, feature implementation, refactoring, explanation, etc.)
+2. Extract or infer key technical context:
+   - Language, framework, environment
+   - Relevant files or code scope
+   - Current behavior vs expected behavior
+3. Detect missing or ambiguous information
+4. Restructure the request into a high-quality prompt
+
+Prompt Structure (when applicable):
+- Task: What needs to be done
+- Context: Relevant background (code, environment, constraints)
+- Current Behavior: What is happening now
+- Expected Behavior: What should happen instead
+- Scope: What can/cannot be modified
+- Output Requirements: Format of the response (code only, explanation, steps, etc.)
+- Validation: How to verify correctness (tests, expected output, conditions)
+
+Behavior:
+- Do not blindly rewrite - improve structure and execution clarity
+- If critical information is missing, either:
+  a) Ask concise follow-up questions, or
+  b) Make reasonable assumptions and clearly state them
+- Prefer making the prompt actionable rather than verbose
+- Remove noise, redundancy, and irrelevant details
+
+Output Format:
+1. Optimized Prompt (ready to use)
+2. What was improved (brief)
+3. Optional: A more strict or more concise version if useful
+
+Anti-patterns to fix:
+- Vague requests like "fix this" or "optimize this"
+- Missing expected behavior
+- No clear output format
+- Mixing multiple tasks without priority
+- Overly long but unstructured descriptions
+
+Goal:
+Turn any programming-related request into a precise instruction that maximizes the chance of correct, efficient AI-generated code.`,
+});
+
 const baseConfig = {
+  relayApiKey: '',
   defaultModel: process.env.DEFAULT_MODEL || 'gpt-5.4',
-  defaultInstructions: decodePromptEnv(
-    process.env.DEFAULT_INSTRUCTIONS || 'You are a pragmatic coding assistant.',
-  ),
+  defaultInstructionsByMode: DEFAULT_INSTRUCTIONS_BY_MODE,
   gatewayPromptMode: parseGatewayPromptMode(process.env.GATEWAY_PROMPT_MODE || 'prepend'),
   gatewaySystemPrompt: decodePromptEnv(process.env.GATEWAY_SYSTEM_PROMPT || ''),
   defaultExtraBody: parseJsonEnv(process.env.DEFAULT_EXTRA_BODY_JSON, {}),
@@ -41,7 +123,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (isGetLike && url.pathname === '/admin') {
-      await serveFile(res, path.join(PUBLIC_DIR, 'admin.html'), req.method === 'HEAD');
+      sendJson(res, 404, { error: 'Not found.' });
       return;
     }
 
@@ -66,10 +148,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'GET' && url.pathname === '/health') {
+      const config = getResolvedConfig();
       sendJson(res, 200, {
         ok: true,
         endpoint: RESPONSES_URL,
-        hasApiKey: Boolean(RELAY_API_KEY),
+        hasApiKey: Boolean(config.relayApiKey),
       });
       return;
     }
@@ -106,18 +189,23 @@ server.listen(PORT, '127.0.0.1', () => {
 });
 
 async function handleChat(req, res) {
-  if (!RELAY_API_KEY) {
+  const appConfig = getResolvedConfig();
+
+  if (!appConfig.relayApiKey) {
     sendJson(res, 500, {
-      error: 'RELAY_API_KEY is not configured. Create a .env file first.',
+      error: 'RELAY_API_KEY is not configured. Save it in the chat page settings first.',
     });
     return;
   }
 
-  const appConfig = getResolvedConfig();
   const body = await readJsonBody(req, MAX_BODY_BYTES);
+  const conversationMode = normalizeConversationMode(body?.mode);
+  const defaultInstructions =
+    appConfig.defaultInstructionsByMode[conversationMode] ||
+    appConfig.defaultInstructionsByMode[CONVERSATION_MODES.CHAT];
   const messages = normalizeMessages(body.messages);
   const model = asNonEmptyString(body.model) || appConfig.defaultModel;
-  const userInstructions = asNonEmptyString(body.instructions) || appConfig.defaultInstructions;
+  const userInstructions = asNonEmptyString(body.instructions) || defaultInstructions;
   const instructions = mergeInstructions(
     userInstructions,
     appConfig.gatewaySystemPrompt,
@@ -169,7 +257,7 @@ async function handleChat(req, res) {
     session_id: sessionId,
     originator: 'responses_chat_studio',
     ...appConfig.upstreamHeaders,
-    authorization: `Bearer ${RELAY_API_KEY}`,
+    authorization: `Bearer ${appConfig.relayApiKey}`,
   };
 
   let upstreamResponse;
@@ -239,7 +327,10 @@ async function handleChat(req, res) {
 async function handleAdminConfigUpdate(req, res) {
   const body = await readJsonBody(req, MAX_BODY_BYTES);
   const nextConfig = sanitizeRuntimeConfig(body);
-  runtimeConfig = nextConfig;
+  runtimeConfig = {
+    ...runtimeConfig,
+    ...nextConfig,
+  };
   await persistRuntimeConfig(runtimeConfig);
   sendJson(res, 200, {
     ok: true,
@@ -260,13 +351,14 @@ function buildClientConfig() {
   const config = getResolvedConfig();
   return {
     endpoint: RESPONSES_URL,
+    relayApiKey: config.relayApiKey,
     defaultModel: config.defaultModel,
-    defaultInstructions: config.defaultInstructions,
+    defaultInstructions: config.defaultInstructionsByMode[CONVERSATION_MODES.CHAT],
+    defaultInstructionsByMode: config.defaultInstructionsByMode,
     defaultExtraBody: config.defaultExtraBody,
-    hasApiKey: Boolean(RELAY_API_KEY),
+    hasApiKey: Boolean(config.relayApiKey),
     hasGatewaySystemPrompt: Boolean(config.gatewaySystemPrompt),
     gatewayPromptMode: config.gatewayPromptMode,
-    adminPath: '/admin',
   };
 }
 
@@ -274,16 +366,19 @@ function buildAdminConfig() {
   const config = getResolvedConfig();
   return {
     endpoint: RESPONSES_URL,
-    hasApiKey: Boolean(RELAY_API_KEY),
+    hasApiKey: Boolean(config.relayApiKey),
     config,
     persistedOverrides: runtimeConfig,
   };
 }
 
 function getResolvedConfig() {
+  const defaultInstructionsByMode = resolveInstructionsConfig();
   return {
+    relayApiKey: resolveConfigValue('relayApiKey', baseConfig.relayApiKey),
     defaultModel: resolveConfigValue('defaultModel', baseConfig.defaultModel),
-    defaultInstructions: resolveConfigValue('defaultInstructions', baseConfig.defaultInstructions),
+    defaultInstructions: defaultInstructionsByMode[CONVERSATION_MODES.CHAT],
+    defaultInstructionsByMode,
     gatewayPromptMode: parseGatewayPromptMode(
       resolveConfigValue('gatewayPromptMode', baseConfig.gatewayPromptMode),
     ),
@@ -302,6 +397,29 @@ function resolveObjectConfigValue(key, fallback) {
   return isPlainObject(value) ? value : fallback;
 }
 
+function resolveInstructionsConfig() {
+  const next = {
+    ...baseConfig.defaultInstructionsByMode,
+  };
+  const runtimeInstructionsByMode = isPlainObject(runtimeConfig.defaultInstructionsByMode)
+    ? runtimeConfig.defaultInstructionsByMode
+    : null;
+
+  if (runtimeInstructionsByMode) {
+    for (const mode of Object.values(CONVERSATION_MODES)) {
+      if (Object.hasOwn(runtimeInstructionsByMode, mode)) {
+        next[mode] = asString(runtimeInstructionsByMode[mode]);
+      }
+    }
+  }
+
+  if (Object.hasOwn(runtimeConfig, 'defaultInstructions')) {
+    next[CONVERSATION_MODES.CHAT] = asString(runtimeConfig.defaultInstructions);
+  }
+
+  return next;
+}
+
 function sanitizeRuntimeConfig(input) {
   if (!isPlainObject(input)) {
     throw Object.assign(new Error('Admin config body must be a JSON object.'), {
@@ -311,12 +429,31 @@ function sanitizeRuntimeConfig(input) {
 
   const next = {};
 
+  if (Object.hasOwn(input, 'relayApiKey')) {
+    next.relayApiKey = asTrimmedString(input.relayApiKey);
+  }
+
   if (Object.hasOwn(input, 'defaultModel')) {
     next.defaultModel = asNonEmptyString(input.defaultModel) || baseConfig.defaultModel;
   }
 
   if (Object.hasOwn(input, 'defaultInstructions')) {
     next.defaultInstructions = asString(input.defaultInstructions);
+  }
+
+  if (Object.hasOwn(input, 'defaultInstructionsByMode')) {
+    if (!isPlainObject(input.defaultInstructionsByMode)) {
+      throw Object.assign(new Error('defaultInstructionsByMode must be a JSON object.'), {
+        statusCode: 400,
+      });
+    }
+
+    next.defaultInstructionsByMode = {};
+    for (const mode of Object.values(CONVERSATION_MODES)) {
+      if (Object.hasOwn(input.defaultInstructionsByMode, mode)) {
+        next.defaultInstructionsByMode[mode] = asString(input.defaultInstructionsByMode[mode]);
+      }
+    }
   }
 
   if (Object.hasOwn(input, 'gatewayPromptMode')) {
@@ -482,6 +619,16 @@ function asNonEmptyString(value) {
 
 function asString(value) {
   return typeof value === 'string' ? value : '';
+}
+
+function asTrimmedString(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function normalizeConversationMode(value) {
+  return value === CONVERSATION_MODES.PROMPT_OPTIMIZER
+    ? CONVERSATION_MODES.PROMPT_OPTIMIZER
+    : CONVERSATION_MODES.CHAT;
 }
 
 function mergeInstructions(userInstructions, gatewayPrompt, mode) {
@@ -695,6 +842,9 @@ function safePublicPath(requestPath) {
   const cleaned = path.normalize(requestPath).replace(/^(\.\.[/\\])+/, '');
   const target = path.join(PUBLIC_DIR, cleaned);
   if (!target.startsWith(PUBLIC_DIR)) {
+    return null;
+  }
+  if (path.basename(target) === 'admin.html') {
     return null;
   }
   if (!existsSync(target)) {
