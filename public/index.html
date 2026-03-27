@@ -121,7 +121,6 @@
           <div>
             <p class="eyebrow">Global Settings</p>
             <h2 id="settingsDrawerTitle" class="settings-drawer__title">全局设置</h2>
-            <p class="settings-drawer__intro">这里的接入配置全局生效，不再占用聊天主区域。</p>
           </div>
 
           <button
@@ -137,13 +136,28 @@
           <div class="relay-settings__header">
             <div>
               <h3 id="relaySettingsTitle" class="relay-settings__title">接入设置</h3>
-              <p class="meta-note">客户在这里输入自己的 `RELAY_API_KEY` 才能开始使用，后续也可以直接改。</p>
             </div>
             <span id="relayApiKeyState" class="mini-badge mini-badge--warn">未配置</span>
           </div>
 
           <form id="relayApiKeyForm" class="relay-settings__form">
-            <label class="field field--compact" for="relayApiKeyInput">
+            <div class="field">
+              <span>使用方式</span>
+              <div id="relayAccessModeGroup" class="access-mode-group" role="radiogroup" aria-label="Key 使用方式">
+                <label class="access-mode-option">
+                  <input id="relayAccessModeOwn" type="radio" name="relayAccessMode" value="own" checked />
+                  <span>使用自己的 Key</span>
+                </label>
+                <label class="access-mode-option">
+                  <input id="relayAccessModePublic" type="radio" name="relayAccessMode" value="public" />
+                  <span>使用公益 Key</span>
+                </label>
+              </div>
+            </div>
+
+            <p id="publicRelayHint" class="meta-note">如果服务端配置了公益 key，用户可以直接切换使用，前端不会拿到真实 key。</p>
+
+            <label id="relayApiKeyField" class="field field--compact" for="relayApiKeyInput">
               <span>RELAY_API_KEY</span>
               <input
                 id="relayApiKeyInput"

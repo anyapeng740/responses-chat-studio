@@ -15,6 +15,9 @@ loadEnv(path.join(__dirname, '.env'));
 const PORT = toPositiveInt(process.env.PORT, 3000);
 const RESPONSES_URL = process.env.RESPONSES_URL || 'https://example.com/responses';
 const MAX_BODY_BYTES = toPositiveInt(process.env.MAX_BODY_BYTES, 25_000_000);
+const PUBLIC_RELAY_API_KEY = asTrimmedString(
+  process.env.PUBLIC_RELAY_API_KEY || process.env.RELAY_API_KEY || '',
+);
 
 const CONVERSATION_MODES = Object.freeze({
   CHAT: 'chat',
@@ -101,7 +104,6 @@ Turn any programming-related request into a precise instruction that maximizes t
 });
 
 const baseConfig = {
-  relayApiKey: '',
   defaultModel: process.env.DEFAULT_MODEL || 'gpt-5.4',
   defaultInstructionsByMode: DEFAULT_INSTRUCTIONS_BY_MODE,
   gatewayPromptMode: parseGatewayPromptMode(process.env.GATEWAY_PROMPT_MODE || 'prepend'),
@@ -148,11 +150,9 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'GET' && url.pathname === '/health') {
-      const config = getResolvedConfig();
       sendJson(res, 200, {
         ok: true,
         endpoint: RESPONSES_URL,
-        hasApiKey: Boolean(config.relayApiKey),
       });
       return;
     }
@@ -189,16 +189,20 @@ server.listen(PORT, '127.0.0.1', () => {
 });
 
 async function handleChat(req, res) {
+  const body = await readJsonBody(req, MAX_BODY_BYTES);
   const appConfig = getResolvedConfig();
+  const usePublicRelayKey = Boolean(body?.usePublicRelayKey);
+  const relayApiKey = usePublicRelayKey
+    ? PUBLIC_RELAY_API_KEY
+    : asTrimmedString(body?.relayApiKey);
 
-  if (!appConfig.relayApiKey) {
-    sendJson(res, 500, {
-      error: 'RELAY_API_KEY is not configured. Save it in the chat page settings first.',
-    });
+  if (!relayApiKey) {
+    sendJson(res, 400, usePublicRelayKey
+      ? { error: 'Public relay key is not configured on the server.' }
+      : { error: 'RELAY_API_KEY is required for this request. Save it in the current browser first.' });
     return;
   }
 
-  const body = await readJsonBody(req, MAX_BODY_BYTES);
   const conversationMode = normalizeConversationMode(body?.mode);
   const defaultInstructions =
     appConfig.defaultInstructionsByMode[conversationMode] ||
@@ -257,7 +261,7 @@ async function handleChat(req, res) {
     session_id: sessionId,
     originator: 'responses_chat_studio',
     ...appConfig.upstreamHeaders,
-    authorization: `Bearer ${appConfig.relayApiKey}`,
+    authorization: `Bearer ${relayApiKey}`,
   };
 
   let upstreamResponse;
@@ -351,12 +355,11 @@ function buildClientConfig() {
   const config = getResolvedConfig();
   return {
     endpoint: RESPONSES_URL,
-    relayApiKey: config.relayApiKey,
+    hasPublicRelayKey: Boolean(PUBLIC_RELAY_API_KEY),
     defaultModel: config.defaultModel,
     defaultInstructions: config.defaultInstructionsByMode[CONVERSATION_MODES.CHAT],
     defaultInstructionsByMode: config.defaultInstructionsByMode,
     defaultExtraBody: config.defaultExtraBody,
-    hasApiKey: Boolean(config.relayApiKey),
     hasGatewaySystemPrompt: Boolean(config.gatewaySystemPrompt),
     gatewayPromptMode: config.gatewayPromptMode,
   };
@@ -366,7 +369,6 @@ function buildAdminConfig() {
   const config = getResolvedConfig();
   return {
     endpoint: RESPONSES_URL,
-    hasApiKey: Boolean(config.relayApiKey),
     config,
     persistedOverrides: runtimeConfig,
   };
@@ -375,7 +377,6 @@ function buildAdminConfig() {
 function getResolvedConfig() {
   const defaultInstructionsByMode = resolveInstructionsConfig();
   return {
-    relayApiKey: resolveConfigValue('relayApiKey', baseConfig.relayApiKey),
     defaultModel: resolveConfigValue('defaultModel', baseConfig.defaultModel),
     defaultInstructions: defaultInstructionsByMode[CONVERSATION_MODES.CHAT],
     defaultInstructionsByMode,
@@ -429,10 +430,6 @@ function sanitizeRuntimeConfig(input) {
 
   const next = {};
 
-  if (Object.hasOwn(input, 'relayApiKey')) {
-    next.relayApiKey = asTrimmedString(input.relayApiKey);
-  }
-
   if (Object.hasOwn(input, 'defaultModel')) {
     next.defaultModel = asNonEmptyString(input.defaultModel) || baseConfig.defaultModel;
   }
@@ -483,7 +480,7 @@ function loadRuntimeConfigSync(filePath) {
 
   try {
     const parsed = JSON.parse(readFileSync(filePath, 'utf8'));
-    return isPlainObject(parsed) ? parsed : {};
+    return isPlainObject(parsed) ? stripSensitiveRuntimeConfig(parsed) : {};
   } catch {
     return {};
   }
@@ -491,7 +488,11 @@ function loadRuntimeConfigSync(filePath) {
 
 async function persistRuntimeConfig(config) {
   await mkdir(DATA_DIR, { recursive: true });
-  await writeFile(RUNTIME_CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+  await writeFile(
+    RUNTIME_CONFIG_PATH,
+    `${JSON.stringify(stripSensitiveRuntimeConfig(config), null, 2)}\n`,
+    'utf8',
+  );
 }
 
 function loadEnv(filePath) {
@@ -623,6 +624,15 @@ function asString(value) {
 
 function asTrimmedString(value) {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function stripSensitiveRuntimeConfig(config) {
+  if (!isPlainObject(config)) {
+    return {};
+  }
+
+  const { relayApiKey: _relayApiKey, ...rest } = config;
+  return rest;
 }
 
 function normalizeConversationMode(value) {

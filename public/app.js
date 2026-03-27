@@ -1,6 +1,9 @@
 const sessionKey = 'responses-chat-studio.session-id';
 const currentConversationKey = 'responses-chat-studio.current-conversation-id';
 const currentModeKey = 'responses-chat-studio.current-mode';
+const profileKey = 'responses-chat-studio.profile-id';
+const relayAccessModeStorageKey = 'responses-chat-studio.relay-access-mode';
+const relayApiKeyStorageKey = 'responses-chat-studio.relay-api-key';
 const maxImageCount = 4;
 const maxFileBytes = 4 * 1024 * 1024;
 const historyDbName = 'responses-chat-studio-db';
@@ -8,7 +11,6 @@ const historyStoreName = 'conversations';
 const maxHistoryItems = 50;
 const configApiPath = 'api/config';
 const chatApiPath = 'api/chat';
-const adminConfigApiPath = 'api/admin/config';
 const conversationModes = Object.freeze({
   chat: {
     label: '聊天',
@@ -40,6 +42,10 @@ let persistTimer = null;
 const state = {
   endpoint: '',
   currentMode: 'chat',
+  historyScope: 'no-key',
+  accessMode: 'own',
+  hasPublicRelayKey: false,
+  profileId: '',
   relayApiKey: '',
   hasApiKey: false,
   isStreaming: false,
@@ -76,7 +82,11 @@ const elements = {
   modeDescription: document.querySelector('#modeDescription'),
   modeTabs: document.querySelector('#modeTabs'),
   newChatButton: document.querySelector('#newChatButton'),
+  publicRelayHint: document.querySelector('#publicRelayHint'),
+  relayAccessModeOwn: document.querySelector('#relayAccessModeOwn'),
+  relayAccessModePublic: document.querySelector('#relayAccessModePublic'),
   relayApiKeyErrorText: document.querySelector('#relayApiKeyErrorText'),
+  relayApiKeyField: document.querySelector('#relayApiKeyField'),
   relayApiKeyForm: document.querySelector('#relayApiKeyForm'),
   relayApiKeyInfo: document.querySelector('#relayApiKeyInfo'),
   relayApiKeyInput: document.querySelector('#relayApiKeyInput'),
@@ -102,12 +112,12 @@ async function boot() {
     const config = await fetchConfig();
     hydrateConfig(config);
     renderRelayApiKeySettings();
-    state.history = await loadConversations();
-    restoreCurrentConversation();
+    await refreshHistoryForCurrentScope();
     renderApp();
     setStatus('空闲');
   } catch (error) {
     showError(`加载失败: ${error.message}`);
+    state.history = [];
     createBlankConversation();
     renderRelayApiKeySettings('读取配置失败，暂时无法保存 key。');
     renderApp();
@@ -142,20 +152,25 @@ async function fetchConfig() {
 }
 
 function hydrateRuntime() {
+  state.profileId = getOrCreateLocalValue(profileKey);
   state.sessionId = getOrCreateLocalValue(sessionKey);
   state.currentMode = normalizeMode(localStorage.getItem(currentModeKey));
+  state.accessMode = normalizeRelayAccessMode(localStorage.getItem(relayAccessModeStorageKey));
+  state.relayApiKey = localStorage.getItem(relayApiKeyStorageKey) || '';
+  syncRelayAccessState();
+  state.historyScope = buildHistoryScope();
 }
 
 function hydrateConfig(config) {
   state.endpoint = config.endpoint;
-  state.relayApiKey = config.relayApiKey || '';
-  state.hasApiKey = Boolean(config.hasApiKey);
+  state.hasPublicRelayKey = Boolean(config.hasPublicRelayKey);
   state.hasGatewaySystemPrompt = Boolean(config.hasGatewaySystemPrompt);
   state.gatewayPromptMode = config.gatewayPromptMode || 'prepend';
   state.defaultModel = config.defaultModel || 'gpt-5.4';
   state.defaultInstructionsByMode = normalizeInstructionsByMode(config);
   state.defaultExtraBody =
     config.defaultExtraBody && typeof config.defaultExtraBody === 'object' ? config.defaultExtraBody : {};
+  syncRelayAccessState();
 }
 
 function restoreCurrentConversation() {
@@ -203,11 +218,25 @@ function renderModeControls() {
 }
 
 function renderRelayApiKeySettings(infoText = '') {
+  elements.relayAccessModeOwn.checked = state.accessMode === 'own';
+  elements.relayAccessModePublic.checked = state.accessMode === 'public';
+  elements.relayAccessModePublic.disabled = !state.hasPublicRelayKey;
+  elements.publicRelayHint.textContent = state.hasPublicRelayKey
+    ? '公益 key 已启用，切换后前端不会拿到真实 key。'
+    : '当前服务端没有可用的默认 key，所以只能使用自己的 key。';
+  elements.relayApiKeyField.hidden = state.accessMode === 'public';
   elements.relayApiKeyInput.value = state.relayApiKey;
-  elements.relayApiKeyState.textContent = state.hasApiKey ? '已配置' : '未配置';
+  elements.relayApiKeyState.textContent = state.accessMode === 'public'
+    ? state.hasPublicRelayKey
+      ? '公益模式'
+      : '未配置'
+    : state.hasApiKey
+      ? '已配置'
+      : '未配置';
   elements.relayApiKeyState.className = `mini-badge ${state.hasApiKey ? 'mini-badge--ok' : 'mini-badge--warn'}`;
   elements.relayApiKeyInfo.textContent =
-    infoText || (state.hasApiKey ? '已保存，可直接开始使用，也可以随时修改。' : '先保存 RELAY_API_KEY，保存后才可以使用。');
+    infoText ||
+    buildRelayAccessInfoText();
 }
 
 function renderAttachments() {
@@ -446,7 +475,11 @@ async function onSubmit(event) {
   }
 
   if (!state.hasApiKey) {
-    showError('请先在全局设置里保存 RELAY_API_KEY。');
+    showError(
+      state.accessMode === 'public'
+        ? '服务端还没有配置公益 key，请先切回自己的 key 或补上公益 key。'
+        : '请先在全局设置里保存 RELAY_API_KEY。',
+    );
     openSettingsDrawer();
     return;
   }
@@ -510,6 +543,8 @@ async function streamResponse(assistantMessageId) {
     model: state.defaultModel,
     mode: state.currentMode,
     instructions: getActiveInstructions(),
+    relayApiKey: state.accessMode === 'own' ? state.relayApiKey : '',
+    usePublicRelayKey: state.accessMode === 'public',
     extraBody: state.defaultExtraBody,
     sessionId: state.sessionId,
     clientRequestId: state.sessionId,
@@ -806,8 +841,12 @@ function openSettingsDrawer() {
   renderRelayApiKeySettings();
   elements.settingsDrawer.hidden = false;
   document.body.classList.add('body--drawer-open');
-  elements.relayApiKeyInput.focus();
-  elements.relayApiKeyInput.select();
+  if (state.accessMode === 'own') {
+    elements.relayApiKeyInput.focus();
+    elements.relayApiKeyInput.select();
+  } else {
+    elements.relayAccessModePublic.focus();
+  }
 }
 
 function closeSettingsDrawer() {
@@ -829,37 +868,43 @@ async function onRelayApiKeySubmit(event) {
   elements.relayApiKeyInfo.textContent = '保存中...';
 
   try {
-    const response = await fetch(adminConfigApiPath, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({
-        relayApiKey: elements.relayApiKeyInput.value.trim(),
-      }),
-    });
+    const previousHistoryScope = state.historyScope;
+    const nextAccessMode = normalizeRelayAccessMode(
+      document.querySelector('input[name="relayAccessMode"]:checked')?.value,
+    );
+    const nextRelayApiKey = elements.relayApiKeyInput.value.trim();
 
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new Error(payload.error || `HTTP ${response.status}`);
+    if (nextAccessMode === 'public' && !state.hasPublicRelayKey) {
+      throw new Error('服务端没有可用的默认 key。');
     }
 
-    hydrateConfig({
-      endpoint: payload.endpoint,
-      relayApiKey: payload.config?.relayApiKey || '',
-      hasApiKey: payload.hasApiKey,
-      hasGatewaySystemPrompt: Boolean(payload.config?.gatewaySystemPrompt),
-      gatewayPromptMode: payload.config?.gatewayPromptMode || 'prepend',
-      defaultModel: payload.config?.defaultModel || 'gpt-5.4',
-      defaultInstructions: payload.config?.defaultInstructions || '',
-      defaultInstructionsByMode: payload.config?.defaultInstructionsByMode || null,
-      defaultExtraBody:
-        payload.config?.defaultExtraBody && typeof payload.config.defaultExtraBody === 'object'
-          ? payload.config.defaultExtraBody
-          : {},
-    });
-    renderHeader();
-    renderRelayApiKeySettings(state.hasApiKey ? 'Key 已保存。' : 'Key 已清空，保存新 key 后才可以使用。');
+    localStorage.setItem(relayAccessModeStorageKey, nextAccessMode);
+
+    if (nextAccessMode === 'own' && nextRelayApiKey) {
+      localStorage.setItem(relayApiKeyStorageKey, nextRelayApiKey);
+    }
+
+    if (nextAccessMode === 'own' && !nextRelayApiKey) {
+      localStorage.removeItem(relayApiKeyStorageKey);
+    }
+
+    state.accessMode = nextAccessMode;
+    state.relayApiKey = nextRelayApiKey;
+    syncRelayAccessState();
+    state.historyScope = buildHistoryScope();
+
+    if (state.historyScope !== previousHistoryScope) {
+      await refreshHistoryForCurrentScope({ resetConversation: true });
+    }
+
+    renderRelayApiKeySettings(
+      state.accessMode === 'public'
+        ? '已切换到公益 key，并进入公益模式自己的独立聊天记录。'
+        : state.hasApiKey
+          ? 'Key 已保存到当前浏览器，已切换到该 key 的独立聊天记录。'
+          : 'Key 已清空。需要重新输入后才可以继续使用。',
+    );
+    renderApp();
 
     if (state.hasApiKey) {
       hideError();
@@ -1049,6 +1094,7 @@ async function persistCurrentConversation() {
     id: state.currentConversationId,
     createdAt: state.currentConversationCreatedAt,
     updatedAt: Date.now(),
+    historyScope: state.historyScope,
     mode: state.currentMode,
     title: deriveConversationTitle(state.messages, state.currentMode),
     preview: deriveConversationPreview(state.messages),
@@ -1175,6 +1221,7 @@ async function getHistoryDb() {
 }
 
 async function loadConversations() {
+  const scope = state.historyScope;
   const db = await getHistoryDb();
   if (!db) {
     return [];
@@ -1188,6 +1235,7 @@ async function loadConversations() {
       resolve(
         conversations
           .map((conversation) => normalizeConversationRecord(conversation))
+          .filter((conversation) => matchesCurrentHistoryScope(conversation, scope))
           .sort((left, right) => (right.updatedAt || 0) - (left.updatedAt || 0))
           .slice(0, maxHistoryItems),
       );
@@ -1243,6 +1291,36 @@ function getActiveInstructions() {
   return state.defaultInstructionsByMode[normalizeMode(state.currentMode)] || '';
 }
 
+function buildHistoryScope() {
+  if (!state.profileId) {
+    return 'no-profile';
+  }
+
+  if (state.accessMode === 'public') {
+    return `profile:${state.profileId}:public`;
+  }
+
+  if (state.relayApiKey) {
+    return `profile:${state.profileId}:own:${simpleHash(state.relayApiKey)}`;
+  }
+
+  return `profile:${state.profileId}:own:empty`;
+}
+
+async function refreshHistoryForCurrentScope(options = {}) {
+  const { resetConversation = false } = options;
+
+  state.historyScope = buildHistoryScope();
+  state.history = await loadConversations();
+
+  if (resetConversation) {
+    createBlankConversation();
+    return;
+  }
+
+  restoreCurrentConversation();
+}
+
 function normalizeInstructionsByMode(config) {
   const input =
     config && config.defaultInstructionsByMode && typeof config.defaultInstructionsByMode === 'object'
@@ -1256,9 +1334,47 @@ function normalizeInstructionsByMode(config) {
   };
 }
 
+function normalizeRelayAccessMode(value) {
+  return value === 'public' ? 'public' : 'own';
+}
+
+function syncRelayAccessState() {
+  if (state.accessMode === 'public') {
+    state.hasApiKey = state.hasPublicRelayKey;
+    return;
+  }
+
+  state.hasApiKey = Boolean(state.relayApiKey);
+}
+
+function buildRelayAccessInfoText() {
+  if (state.accessMode === 'public') {
+    return state.hasPublicRelayKey
+      ? '当前使用公益 key。聊天记录只在这个浏览器里保存，不会和其他浏览器共享。'
+      : '当前选中了公益 key，但服务端没有可用的默认 key，所以暂时不能使用。';
+  }
+
+  return state.hasApiKey
+    ? '已保存到当前浏览器，可直接开始使用；聊天记录只在这个浏览器里按当前 key 隔离。'
+    : '先在当前浏览器保存 RELAY_API_KEY，保存后才可以使用。';
+}
+
+function matchesCurrentHistoryScope(conversation, scope) {
+  if (conversation.historyScope === scope) {
+    return true;
+  }
+
+  if (state.accessMode === 'own' && state.relayApiKey) {
+    return conversation.historyScope === `relay:${simpleHash(state.relayApiKey)}`;
+  }
+
+  return false;
+}
+
 function normalizeConversationRecord(record) {
   return {
     ...record,
+    historyScope: typeof record?.historyScope === 'string' ? record.historyScope : '',
     mode: normalizeMode(record?.mode),
     messages: Array.isArray(record?.messages) ? record.messages : [],
   };

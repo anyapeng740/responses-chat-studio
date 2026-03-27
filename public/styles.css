@@ -594,6 +594,28 @@ pre {
   gap: 0.5rem;
 }
 
+.access-mode-group {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.access-mode-option {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.03);
+  cursor: pointer;
+}
+
+.access-mode-option input {
+  width: auto;
+  margin: 0;
+  accent-color: var(--primary-accent);
+}
+
 .field > span,
 .field label {
   font-size: 0.9rem;
