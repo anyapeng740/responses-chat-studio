@@ -6,6 +6,9 @@ const maxFileBytes = 4 * 1024 * 1024;
 const historyDbName = 'responses-chat-studio-db';
 const historyStoreName = 'conversations';
 const maxHistoryItems = 50;
+const configApiPath = 'api/config';
+const chatApiPath = 'api/chat';
+const adminConfigApiPath = 'api/admin/config';
 const conversationModes = Object.freeze({
   chat: {
     label: '聊天',
@@ -131,7 +134,7 @@ function bindEvents() {
 }
 
 async function fetchConfig() {
-  const response = await fetch('/api/config');
+  const response = await fetch(configApiPath);
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}`);
   }
@@ -517,7 +520,7 @@ async function streamResponse(assistantMessageId) {
   };
 
   try {
-    const response = await fetch('/api/chat', {
+    const response = await fetch(chatApiPath, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -826,7 +829,7 @@ async function onRelayApiKeySubmit(event) {
   elements.relayApiKeyInfo.textContent = '保存中...';
 
   try {
-    const response = await fetch('/api/admin/config', {
+    const response = await fetch(adminConfigApiPath, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
